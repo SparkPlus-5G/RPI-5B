@@ -1,0 +1,2 @@
+# Core dependencies - minimal for Pi 5B
+pyserial>=3.5
