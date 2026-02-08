@@ -1,2 +1,7 @@
-# Core dependencies - minimal for Pi 5B
+
+smbus2
+RPi.bme280
+adafruit-circuitpython-dht
+gpiozero
+rpi-lgpio
 pyserial>=3.5
