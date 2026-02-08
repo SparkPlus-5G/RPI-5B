@@ -2,7 +2,6 @@ import time
 import board
 import busio
 import digitalio
-import adafruit_dht
 import smbus2
 import bme280
 from gpiozero import InputDevice, Button
@@ -18,7 +17,6 @@ MPU6500_ADDR = 0x68
 BME280_ADDR = 0x76 # Or 0x77
 
 # GPIO Pins (BCM numbering)
-DHT_PIN = board.D4
 VIBRATION_PIN = 6
 LDR_PIN = 12
 
@@ -80,7 +78,6 @@ def setup_csv():
             writer = csv.writer(f)
             writer.writerow([
                 'timestamp', 
-                'temp_dht', 'hum_dht',
                 'temp_bme', 'hum_bme', 'pres_bme',
                 'acc_x', 'acc_y', 'acc_z',
                 'gyro_x', 'gyro_y', 'gyro_z',
@@ -93,7 +90,6 @@ def log_to_csv(data):
             writer = csv.writer(f)
             writer.writerow([
                 datetime.now().isoformat(),
-                data.get('temp_dht'), data.get('hum_dht'),
                 data.get('temp_bme'), data.get('hum_bme'), data.get('pres_bme'),
                 data.get('acc_x'), data.get('acc_y'), data.get('acc_z'),
                 data.get('gyro_x'), data.get('gyro_y'), data.get('gyro_z'),
@@ -115,32 +111,15 @@ def main():
         print(f"I2C Setup Error: {e}")
         return
 
-    # 2. Setup DHT22
-    # Note: DHT22 on Pi5 might be flaky with adafruit lib alone due to timing
-    dht_device = adafruit_dht.DHT22(DHT_PIN)
+    # 2. Setup Digital Inputs
+    vibration_sensor = InputDevice(VIBRATION_PIN, pull_up=False) 
+    ldr_sensor = InputDevice(LDR_PIN, pull_up=False) 
 
-    # 3. Setup Digital Inputs
-    # Using gpiozero for Pi 5 compatibility (requires lgpio/rpi-lgpio)
-    vibration_sensor = InputDevice(VIBRATION_PIN, pull_up=False) # Usually active high? Check sensor
-    ldr_sensor = InputDevice(LDR_PIN, pull_up=False) # Digital D0 usually active low/high threshold
-
-    print("Sensors Initialized. Logging to CSV...")
+    print("Sensors Initialized (MPU, BME/BMP, Vib, LDR). Logging to CSV...")
 
     while True:
         data = {}
         
-        # --- DHT22 ---
-        try:
-            data['temp_dht'] = dht_device.temperature
-            data['hum_dht'] = dht_device.humidity
-        except RuntimeError as error:
-            # DHT common transient errors
-            # print(error.args[0])
-            pass
-        except Exception as error:
-            dht_device.exit()
-            raise error
-
         # --- I2C Sensors ---
         try:
             # BME280
@@ -154,7 +133,7 @@ def main():
             data.update(mpu_data)
             
         except Exception as e:
-            print(f"I2C Read Error: {e}")
+            pass # Keep looping
 
         # --- Digital Sensors ---
         try:
@@ -163,26 +142,43 @@ def main():
         except Exception as e:
             print(f"GPIO Error: {e}")
 
+
         # Log and Print
         timestamp = datetime.now().strftime("%H:%M:%S")
         
-        # Build status string for all 5 sensors
-        # 1. DHT
-        dht_str = f"DHT:{data.get('temp_dht')}C/{data.get('hum_dht')}%" if data.get('temp_dht') else "DHT:ERR"
-        # 2. BME
-        bme_str = f"BME:{data.get('temp_bme')}C/{data.get('hum_bme')}%/{data.get('pres_bme')}hPa" if data.get('temp_bme') else "BME:ERR"
-        # 3. MPU (Acc X only for brevity)
+        # Check BME Chip ID if possible (0x60=BME280, 0x58=BMP280)
+        try:
+            chip_id = bus.read_byte_data(BME280_ADDR, 0xD0)
+            is_bmp = (chip_id == 0x58) 
+            chip_str = f"ID:0x{chip_id:02X}"
+            sensor_name = "BMP" if is_bmp else "BME"
+        except:
+            chip_str = "ID:??"
+            is_bmp = False
+            sensor_name = "BME"
+
+        # BME/BMP
+        if is_bmp:
+             # BMP280 has no humidity
+             bme_str = f"{sensor_name}({chip_str}):{data.get('temp_bme')}C/{data.get('pres_bme')}hPa"
+        else:
+             bme_str = f"{sensor_name}({chip_str}):{data.get('temp_bme')}C/{data.get('hum_bme')}%/{data.get('pres_bme')}hPa"
+             
+        if not data.get('temp_bme'):
+            bme_str = f"{sensor_name}:ERR"
+
+        # MPU (Acc X only for brevity)
         mpu_str = f"MPU-X:{data.get('acc_x')}" if data.get('acc_x') is not None else "MPU:ERR"
-        # 4. Vibration
+        # Vibration
         vib_str = f"Vib:{data.get('vibration')}"
-        # 5. LDR
+        # LDR
         ldr_str = f"LDR:{data.get('light_detected')}"
         
-        print(f"[{timestamp}] {dht_str} | {bme_str} | {mpu_str} | {vib_str} | {ldr_str}")
+        print(f"[{timestamp}] {bme_str} | {mpu_str} | {vib_str} | {ldr_str}")
         
         log_to_csv(data)
 
-        time.sleep(1)
+        time.sleep(1) # Back to 1s as DHT is gone
 
 if __name__ == "__main__":
     main()
